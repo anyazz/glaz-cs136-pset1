@@ -16,8 +16,8 @@ from peer import Peer
 class GlazStd(Peer):
     def post_init(self):
         print "post_init(): %s here!" % self.id
-        self.state = dict()
-    
+        self.optimistic_id = None
+ 
     def requests(self, peers, history):
         """
         peers: available info about the peers (who has what pieces)
@@ -28,6 +28,8 @@ class GlazStd(Peer):
         This will be called after update_pieces() with the most recent state.
         """
         needed = lambda i: self.pieces[i] < self.conf.blocks_per_piece
+
+        # list of integers representing ids of pieces needed
         needed_pieces = filter(needed, range(len(self.pieces)))
         np_set = set(needed_pieces)
 
@@ -109,17 +111,13 @@ class GlazStd(Peer):
             chosen = cooperative_peers[:S-1]
 
             # Step 2: optimistically unchoke 1 peer every 3 rounds, store choice in class state
-            if round % 3 == 0 or "optimistic_id" not in self.state:
-                print("REQUESTED IDS", requester_ids)
-                print("CHOSEN", chosen)
+            if round % 3 == 0 or !self.optimistic_id:
                 unchosen_requesters = set(requester_ids) - set(chosen)
                 if len(unchosen_requesters) > 0:
-                    optimistic_id = random.choice(tuple(unchosen_requesters))
-                    self.state["optimistic_id"] = optimistic_id
-                    chosen.append(optimistic_id)
+                    self.optimistic_id = random.choice(tuple(unchosen_requesters))
+                    chosen.append(self.optimistic_id)
             else:
-                optimistic_id = self.state["optimistic_id"]
-                chosen.append(optimistic_id)
+                chosen.append(self.optimistic_id)
 
             # Evenly "split" upload bandwidth among the chosen requesters
             bws = even_split(self.up_bw, len(chosen))
