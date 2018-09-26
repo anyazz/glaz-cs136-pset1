@@ -111,7 +111,7 @@ class GlazStd(Peer):
             chosen = cooperative_peers[:S-1]
 
             # Step 2: optimistically unchoke 1 peer every 3 rounds, store choice in class state
-            if round % 3 == 0 or !self.optimistic_id:
+            if round % 3 == 0 or not self.optimistic_id:
                 unchosen_requesters = set(requester_ids) - set(chosen)
                 if len(unchosen_requesters) > 0:
                     self.optimistic_id = random.choice(tuple(unchosen_requesters))
