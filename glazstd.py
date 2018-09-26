@@ -76,49 +76,52 @@ class GlazStd(Peer):
         In each round, this will be called after requests().
         """
         S = 4   # total unchoke slots
+
         round = history.current_round()
-        logging.debug("%s again.  It's round %d." % (
-            self.id, round))
-        if round != 0:
+
+        # look at past rounds to determine previously cooperative peers
+        if round >= 2:
             last_round_dl = history.downloads[round-1]
             second_last_round_dl =history.downloads[round-2]
-        # One could look at other stuff in the history too here.
-        # For example, history.downloads[round-1] (if round != 0, of course)
-        # has a list of Download objects for each Download to this peer in
-        # the previous round.
+        
+        # initialize array of chosen peers to unchoke
         chosen = []
 
+        # check if no peers need to be unchoked
         if len(requests) == 0:
-            logging.debug("No one wants my pieces!")
             bws = []
+
         else:
-            # pick S-1 most cooperative peers with requests to unchoke
+            # Step 1: Pick S-1 most cooperative peers with requests to unchoke
+
+            # count total downloaded blocks from each peer in last 2 rounds
             downloads_per_peer = {peer.id:0 for peer in peers}
             for dl in last_round_dl:
                 downloads_per_peer[dl.from_id] += dl.blocks
             for dl in second_last_round_dl:
                 downloads_per_peer[dl.from_id] += dl.blocks
-            cooperative_peers = sorted(downloads_per_peer, key=lambda x:x[1])
 
+            # sort peers with requests by amount downloaded from them
             requester_ids = set([r.requester_id for r in requests])
-            i = 0
-            # print("COOPERATIVE PEERS:", cooperative_peers)
-            # print("REQUESTER IDS:", requester_ids)
-            for p in cooperative_peers:
-                if p in requester_ids:
-                    chosen.append(p)
-                if len(chosen) == S-1:
-                    break;
-            # print("CHOSEN:", chosen)
-            # optimistically unchoke 1 every 3 rounds
+            cooperative_peers = sorted(requester_ids, key=lambda x:downloads_per_peer[x])
+
+            # choose S-1 most cooperative peers that have requests to unchoke
+            chosen = cooperative_peers[:S-1]
+
+            # Step 2: optimistically unchoke 1 peer every 3 rounds, store choice in class state
             if round % 3 == 0 or "optimistic_id" not in self.state:
-                optimistic_id = random.choice(tuple(set(cooperative_peers) - set(chosen)))
-                self.state["optimistic_id"] = optimistic_id
+                print("REQUESTED IDS", requester_ids)
+                print("CHOSEN", chosen)
+                unchosen_requesters = set(requester_ids) - set(chosen)
+                if len(unchosen_requesters) > 0:
+                    optimistic_id = random.choice(tuple(unchosen_requesters))
+                    self.state["optimistic_id"] = optimistic_id
+                    chosen.append(optimistic_id)
             else:
                 optimistic_id = self.state["optimistic_id"]
-            chosen.append(optimistic_id)
+                chosen.append(optimistic_id)
 
-            # Evenly "split" my upload bandwidth among the one chosen requester
+            # Evenly "split" upload bandwidth among the chosen requesters
             bws = even_split(self.up_bw, len(chosen))
 
         # create actual uploads out of the list of peer ids and bandwidths
