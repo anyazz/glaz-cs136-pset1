@@ -102,22 +102,25 @@ class GlazPropShare(Peer):
             for blocks in downloads_per_peer.values():
                 total_blocks += blocks
 
+            # determine requesters not downloaded from last round
             reqs = set([req.requester_id for req in requests])
             downloaded_reqs = set(downloads_per_peer.keys())
             remaining = reqs - downloaded_reqs
-            print downloads_per_peer
+
+            # allocate 10% for optimistic unchoking if there are requesters who
+            # did not upload last round
             if remaining:
-                # unchoke each peer and calculate bandwidth given
+                # unchoke each peer and calculate bandwidth
                 for peer, blocks in downloads_per_peer.items():
                     chosen.append(peer)
                     bws.append(floor(blocks * 0.9 / total_blocks))
 
                 # Step 2: optimistically unchoke 1 peer not downloaded from
                 bws.append(self.up_bw - sum(bws))
-
                 chosen.append(random.choice(list(remaining)))
+            # if all requesters uploaded last round, allocate 100% accordingly
             else:
-                # unchoke each peer and calculate bandwidth given
+                # unchoke each peer and calculate bandwidth
                 for peer, blocks in downloads_per_peer.items():
                     chosen.append(peer)
                     bws.append(floor(blocks / total_blocks))
