@@ -16,8 +16,9 @@ from peer import Peer
 class GlazTyrant(Peer):
     def post_init(self):
         print "post_init(): %s here!" % self.id
-        self.dummy_state = dict()
-        self.dummy_state["cake"] = "lie"
+        self.consecutive_unchokes = {}
+        self.expected_dl = {}
+        self.expected_ul = {}
     
     def requests(self, peers, history):
         """
@@ -30,44 +31,40 @@ class GlazTyrant(Peer):
         """
         needed = lambda i: self.pieces[i] < self.conf.blocks_per_piece
         needed_pieces = filter(needed, range(len(self.pieces)))
-        np_set = set(needed_pieces)  # sets support fast intersection ops.
-
-
-        logging.debug("%s here: still need pieces %s" % (
-            self.id, needed_pieces))
-
-        logging.debug("%s still here. Here are some peers:" % self.id)
-        for p in peers:
-            logging.debug("id: %s, available pieces: %s" % (p.id, p.available_pieces))
-
-        logging.debug("And look, I have my entire history available too:")
-        logging.debug("look at the AgentHistory class in history.py for details")
-        logging.debug(str(history))
+        np_set = set(needed_pieces)
 
         requests = []   # We'll put all the things we want here
-        # Symmetry breaking is good...
-        random.shuffle(needed_pieces)
         
-        # Sort peers by id.  This is probably not a useful sort, but other 
-        # sorts might be useful
-        peers.sort(key=lambda p: p.id)
-        # request all available pieces from all peers!
-        # (up to self.max_requests from each)
+        # count frequency of each needed piece among available pieces from peers,
+        # keeping track of owners of each needed piece
+        piece_frequency = {piece:0 for piece in needed_pieces}
+        piece_ownerid = {piece:[] for piece in needed_pieces}
         for peer in peers:
+
+            # get pieces that peer has and we need
             av_set = set(peer.available_pieces)
             isect = av_set.intersection(np_set)
-            n = min(self.max_requests, len(isect))
-            # More symmetry breaking -- ask for random pieces.
-            # This would be the place to try fancier piece-requesting strategies
-            # to avoid getting the same thing from multiple peers at a time.
-            for piece_id in random.sample(isect, n):
-                # aha! The peer has this piece! Request it.
-                # which part of the piece do we need next?
-                # (must get the next-needed blocks in order)
-                start_block = self.pieces[piece_id]
-                r = Request(self.id, peer.id, piece_id, start_block)
-                requests.append(r)
 
+            # iterate through and update frequency and owner of piece
+            for piece in isect:
+                piece_frequency[piece] += 1;
+                piece_ownerid[piece].append(peer.id)
+
+        # get list of needed pieces as (piece_id, frequency) list and randomly shuffle
+        # to make sure that not all agents request same pieces with same rarity at the same time
+        # (since all start at rarity 2)
+        piece_frequency_items = piece_frequency.items()
+        random.shuffle(piece_frequency_items)
+
+        # sort list by rarity (increasing frequency)
+        piece_frequency_items = sorted(piece_frequency_items, key=lambda x: x[1])
+
+        # iterate through list and request each piece from each of its current owners
+        for (piece_id, _) in piece_frequency_items:
+            start_block = self.pieces[piece_id]
+            for owner in piece_ownerid[piece_id]:
+                r = Request(self.id, owner, piece_id, start_block)
+                requests.append(r)
         return requests
 
     def uploads(self, requests, peers, history):
@@ -80,31 +77,67 @@ class GlazTyrant(Peer):
 
         In each round, this will be called after requests().
         """
-
+        # intial values
+        c = 0.1
+        r = 3   #periods
+        a = 0.2
         round = history.current_round()
-        logging.debug("%s again.  It's round %d." % (
-            self.id, round))
-        # One could look at other stuff in the history too here.
-        # For example, history.downloads[round-1] (if round != 0, of course)
-        # has a list of Download objects for each Download to this peer in
-        # the previous round.
 
-        if len(requests) == 0:
-            logging.debug("No one wants my pieces!")
-            chosen = []
-            bws = []
-        else:
-            logging.debug("Still here: uploading to a random peer")
-            # change my internal state for no reason
-            self.dummy_state["cake"] = "pie"
+        # randomly shuffle peers to avoid symmetry effects
+        random.shuffle(peers)
 
-            request = random.choice(requests)
-            chosen = [request.requester_id]
-            # Evenly "split" my upload bandwidth among the one chosen requester
-            bws = even_split(self.up_bw, len(chosen))
+        # initialize state variables
+        if self.consecutive_unchokes == {}:
+            self.consecutive_unchokes = {peer.id: 0 for peer in peers}
+        if self.expected_dl == {}:
+            self.expected_dl = {peer.id: 0 for peer in peers}
+        if self.expected_ul == {}:
+            self.expected_ul = {peer.id: 1 for peer in peers}
+        
+        requester_ids = set([r.requester_id for r in requests])
+        peer_ids = set([peer.id for peer in peers])
 
-        # create actual uploads out of the list of peer ids and bandwidths
-        uploads = [Upload(self.id, peer_id, bw)
-                   for (peer_id, bw) in zip(chosen, bws)]
+        # count total downloaded blocks from each peer in last round,
+        # update expected UL and DL
+        if round >= 1:
+            unchoker_ids = set([])
+            last_dl = history.downloads[round-1]
+            second_last_ul = history.uploads[round-2]
+            downloads_per_peer = {peer.id:0 for peer in peers}
+            unchoked_ids = set([])
+
+            for dl in last_dl:
+                downloads_per_peer[dl.from_id] += dl.blocks
+                unchoker_ids.add(dl.from_id)
+            for ul in second_last_ul:
+                unchoked_ids.add(ul.from_id)
+
+            for peer_id in unchoker_ids:
+                self.expected_dl[peer_id] = downloads_per_peer[peer_id]
+                self.consecutive_unchokes[peer_id] += 1
+                if self.consecutive_unchokes >= r:
+                    self.expected_ul[peer_id] *= (1 - c)
             
+            for peer_id in peer_ids - unchoker_ids:
+                self.expected_ul[peer_id] *= (1 + a) 
+                self.consecutive_unchokes[peer_id] = 0
+
+        chosen = set([])
+        cooperative_peers = sorted(requester_ids, key=lambda x: -float(self.expected_dl[x]) / float(self.expected_ul[x]))
+        k, ul_bw, uploads = 0, 0, []
+        for peer_id in cooperative_peers:
+            temp = ul_bw + self.expected_ul[peer_id]
+            if temp > self.up_bw:
+                break;
+            ul_bw = temp
+            chosen.add(peer_id)
+            uploads.append(Upload(self.id, peer_id, self.expected_ul[peer_id]))
+
+        unchosen = set(requester_ids) - chosen
+        if len(unchosen) == 0:
+            unchosen = set(peer_ids) - chosen
+        optimistic_id = random.choice(tuple(unchosen))
+        uploads.append(Upload(self.id, optimistic_id, (self.up_bw - ul_bw)))
+
         return uploads
+
