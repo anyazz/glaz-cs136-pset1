@@ -85,7 +85,6 @@ class GlazStd(Peer):
         if round >= 2:
             last_round_dl = history.downloads[round-1]
             second_last_round_dl =history.downloads[round-2]
-        
         # initialize array of chosen peers to unchoke
         chosen = []
 
