@@ -17,8 +17,6 @@ from peer import Peer
 class GlazPropShare(Peer):
     def post_init(self):
         print "post_init(): %s here!" % self.id
-        self.dummy_state = dict()
-        self.dummy_state["cake"] = "lie"
 
     def requests(self, peers, history):
         """
